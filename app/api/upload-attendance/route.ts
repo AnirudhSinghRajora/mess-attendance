@@ -1,30 +1,49 @@
-import { type NextRequest, NextResponse } from "next/server"
+// /app/api/upload-attendance/route.ts   (or wherever your Next.js “POST” handler lives)
+
+import { NextResponse } from "next/server"
+import { Pool } from "pg"
 import * as XLSX from "xlsx"
-import Database from "better-sqlite3"
-import path from "path"
+import { NextRequest } from "next/server"
 
-// Initialize (or create) the SQLite database and attendance table
-function initDatabase() {
-  const dbPath = path.join(process.cwd(), "attendance.db")
-  const db = new Database(dbPath)
+// ----------------------------------------------------------------------------
+// 1) Set up a single Pool instance, using your DATABASE_URL environment variable.
+// ----------------------------------------------------------------------------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // neon.tech / AWS-hosted Neon often requires this:
+  ssl: { rejectUnauthorized: false },
+})
 
-  db.exec(`
+// ----------------------------------------------------------------------------
+// 2) (Optional) At startup, create the “attendance” table if it doesn’t exist.
+//    Because Next.js “route.ts” files are re-used across requests, we can run
+//    this once in a top-level async IIFE. This will only run once per cold start.
+// ----------------------------------------------------------------------------
+;(async () => {
+  const createTableSQL = `
     CREATE TABLE IF NOT EXISTS attendance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      roll_no TEXT NOT NULL,
-      student_name TEXT NOT NULL,
-      month TEXT NOT NULL,
-      year INTEGER NOT NULL,
-      days_present INTEGER NOT NULL,
-      total_amount REAL NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(roll_no, month, year)
-    )
-  `)
+      id            SERIAL PRIMARY KEY,
+      roll_no       TEXT NOT NULL,
+      student_name  TEXT NOT NULL,
+      month         TEXT NOT NULL,
+      year          INTEGER NOT NULL,
+      days_present  INTEGER NOT NULL,
+      total_amount  NUMERIC NOT NULL,
+      created_at    TIMESTAMP WITH TIME ZONE DEFAULT now(),
+      UNIQUE (roll_no, month, year)
+    );
+  `
+  try {
+    await pool.query(createTableSQL)
+    console.log("✅ attendance table is ready.")
+  } catch (err) {
+    console.error("❌ Failed to ensure attendance table exists:", err)
+  }
+})()
 
-  return db
-}
-
+// ----------------------------------------------------------------------------
+// 3) Export your POST handler exactly like before, except using `pg` instead of sqlite.
+// ----------------------------------------------------------------------------
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
@@ -39,16 +58,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Convert uploaded file into a Buffer
+    // ---- Convert uploaded file into a Buffer ----
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
 
-    // Parse the workbook, read the first sheet
+    // ---- Parse the workbook and grab the first sheet ----
     const workbook = XLSX.read(buffer, { type: "buffer" })
     const sheetName = workbook.SheetNames[0]
     const worksheet = workbook.Sheets[sheetName]
 
-    // Read the entire sheet into a 2D array
+    // ---- Read the entire sheet as a 2D array ----
     const fullData = XLSX.utils.sheet_to_json(worksheet, {
       header: 1,
       raw: false,
@@ -62,17 +81,9 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Open (or create) DB and prepare INSERT
-    const db = initDatabase()
-    const insertStmt = db.prepare(`
-      INSERT OR REPLACE INTO attendance
-      (roll_no, student_name, month, year, days_present, total_amount)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `)
-
-    // ------------------------------------------------------------------------
-    // STEP 1: EXTRACT “Month” and “Year”
-    // ------------------------------------------------------------------------
+    // ---------------------------------------------
+    // STEP 1: EXTRACT “Month” and “Year” (scan up to 100 rows)
+    // ---------------------------------------------
     let month = "Unknown"
     let year = new Date().getFullYear()
     let foundMonth = false
@@ -86,23 +97,23 @@ export async function POST(request: NextRequest) {
         const raw = String(row[j] || "").trim()
         const lower = raw.toLowerCase()
 
-        // If the cell is exactly "month" or "month:", grab next non-empty cell
+        // If cell exactly “month” or “month:”
         if (!foundMonth && (lower === "month" || lower === "month:")) {
           for (let k = j + 1; k < row.length; k++) {
-            const cand = String(row[k] || "").trim()
-            if (cand !== "") {
-              month = cand
+            const candidate = String(row[k] || "").trim()
+            if (candidate !== "") {
+              month = candidate
               foundMonth = true
               break
             }
           }
         }
 
-        // If the cell is exactly "year" or "year:", scan to the right until we parse an integer
+        // If cell exactly “year” or “year:”
         if (!foundYear && (lower === "year" || lower === "year:")) {
           for (let k = j + 1; k < row.length; k++) {
-            const cand = String(row[k] || "").trim()
-            const parsed = Number.parseInt(cand, 10)
+            const candidate = String(row[k] || "").trim()
+            const parsed = Number.parseInt(candidate, 10)
             if (!isNaN(parsed)) {
               year = parsed
               foundYear = true
@@ -116,23 +127,27 @@ export async function POST(request: NextRequest) {
       if (foundMonth && foundYear) break
     }
 
-    // ------------------------------------------------------------------------
-    // STEP 2: LOCATE THE TWO-ROW “STUDENT DATA” HEADER
-    // ------------------------------------------------------------------------
+    // ---------------------------------------------
+    // STEP 2: LOCATE the two-row “STUDENT DATA” header
+    //   • First header row contains either:
+    //       – “Student Name” & “Roll No.”  (old format)
+    //       – OR “Name” & “Enrollment No”  (new format)
+    //   • Next header row (row+1) contains daily-columns plus “A” and “P”
+    // ---------------------------------------------
     let headerRowIndex = -1
     for (let i = 0; i < fullData.length; i++) {
       const row = fullData[i]
       if (!row) continue
 
-      // Check if row contains either set of labels:
-      //  • “Student Name” AND “Roll No.”
-      //  • or “Name” AND “Enrollment No”
+      // Detect old-format labels:
       const hasOldName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "student name",
       )
       const hasOldRoll = row.some(
         (c) => String(c || "").trim().toLowerCase() === "roll no.",
       )
+
+      // Detect new-format labels:
       const hasNewName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "name",
       )
@@ -147,7 +162,6 @@ export async function POST(request: NextRequest) {
     }
 
     if (headerRowIndex === -1) {
-      db.close()
       return NextResponse.json(
         {
           error:
@@ -157,45 +171,41 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Extract the first header row (N)
     const headerRow = fullData[headerRowIndex]
-    // Extract the second header row (N+1), where “A”/“P” totals live
     const nextHeaderRow = fullData[headerRowIndex + 1] || []
 
-    // ------------------------------------------------------------------------
-    // STEP 3: DETERMINE COLUMN INDICES (works for both old & new formats)
-    // ------------------------------------------------------------------------
-    // 1) student_name column:
-    //    old → "Student Name"
-    //    new → "Name"
+    // ---------------------------------------------
+    // STEP 3: DETERMINE COLUMN INDICES
+    // ---------------------------------------------
+    // 1) student_name  → either “Student Name” or “Name”
     const nameColIndex = headerRow.findIndex((cell) => {
       const txt = String(cell || "").trim().toLowerCase()
       return txt === "student name" || txt === "name"
     })
 
-    // 2) roll_no column:
-    //    old → "Roll No."
-    //    new → "Enrollment No"
+    // 2) roll_no  → either “Roll No.” or “Enrollment No”
     const rollNoColIndex = headerRow.findIndex((cell) => {
       const txt = String(cell || "").trim().toLowerCase()
       return txt === "roll no." || txt === "enrollment no"
     })
 
-    // 3) total_amount column (could be labeled "Total amount" or "Total Amounts")
+    // 3) total_amount  → any header that “includes” “total amount”
     const totalAmountColIndex = headerRow.findIndex((cell) => {
       const txt = String(cell || "").trim().toLowerCase()
       return txt.includes("total amount")
     })
 
-    // 4) present (“P”) & absent (“A”) columns live in nextHeaderRow
+    // 4) present (“P”)  → in the nextHeaderRow
     const presentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "p"
     })
+
+    // 5) absent (“A”)  → in the nextHeaderRow
     const absentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "a"
     })
 
-    // If any required index is missing, error out
+    // If any required column is missing, return 400
     if (
       nameColIndex === -1 ||
       rollNoColIndex === -1 ||
@@ -203,7 +213,6 @@ export async function POST(request: NextRequest) {
       absentColIndex === -1 ||
       totalAmountColIndex === -1
     ) {
-      db.close()
       return NextResponse.json(
         {
           error:
@@ -213,16 +222,32 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // ------------------------------------------------------------------------
-    // STEP 4: LOOP OVER STUDENT ROWS (start two rows below headerRowIndex)
-    //   → UPPERCASE rollNo & studentName before storing
-    // ------------------------------------------------------------------------
+    // ---------------------------------------------
+    // STEP 4: PROCESS each student row (start at headerRowIndex + 2)
+    //   • Uppercase the roll number & student name before storing.
+    // ---------------------------------------------
     let recordsProcessed = 0
+
+    // We will reuse a single parameterized SQL for “INSERT OR REPLACE”.  
+    // PostgreSQL: “ON CONFLICT (roll_no, month, year) DO UPDATE SET …”
+    const upsertSQL = `
+      INSERT INTO attendance
+        (roll_no, student_name, month, year, days_present, total_amount)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (roll_no, month, year)
+      DO UPDATE SET
+        student_name  = EXCLUDED.student_name,
+        days_present  = EXCLUDED.days_present,
+        total_amount  = EXCLUDED.total_amount
+      RETURNING id;
+    `
+
+    // Loop over student data rows
     for (let i = headerRowIndex + 2; i < fullData.length; i++) {
       const row = fullData[i]
       if (!row) continue
 
-      // Ensure we don’t go out of bounds
+      // Prevent out-of-bounds
       const maxIdx = Math.max(
         nameColIndex,
         rollNoColIndex,
@@ -231,45 +256,35 @@ export async function POST(request: NextRequest) {
       )
       if (row.length <= maxIdx) continue
 
-      // Extract raw strings
       let studentName = String(row[nameColIndex] || "").trim()
       let rollNo = String(row[rollNoColIndex] || "").trim()
-      if (!studentName || !rollNo) {
-        // skip blank or summary rows
-        continue
-      }
+      if (!studentName || !rollNo) continue  // skip blanks
 
-      // --- NEW: force uppercase here ---
+      // Force uppercase, so “lit2024042” → “LIT2024042”
       studentName = studentName.toUpperCase()
       rollNo = rollNo.toUpperCase()
 
-      // Read “P” total directly
-      const daysPresent = Number.parseInt(
-        String(row[presentColIndex] || "0"),
-        10,
-      ) || 0
+      const daysPresent =
+        Number.parseInt(String(row[presentColIndex] || "0"), 10) || 0
+      const totalAmount =
+        Number.parseFloat(String(row[totalAmountColIndex] || "0")) || 0
 
-      // Read “Total amount” directly
-      const totalAmount = Number.parseFloat(
-        String(row[totalAmountColIndex] || "0"),
-      ) || 0
-
+      // Execute the UPSERT into Postgres
       try {
-        insertStmt.run(
+        await pool.query(upsertSQL, [
           rollNo,
           studentName,
           month,
           year,
           daysPresent,
           totalAmount,
-        )
+        ])
         recordsProcessed++
       } catch (err) {
-        console.error(`Error inserting (${rollNo}):`, err)
+        console.error(`Failed to upsert attendance for ${rollNo}:`, err)
       }
     }
 
-    db.close()
     return NextResponse.json({
       message: "File processed successfully",
       recordsProcessed,

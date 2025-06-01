@@ -1,51 +1,72 @@
-import { type NextRequest, NextResponse } from "next/server"
-import Database from "better-sqlite3"
-import path from "path"
+// File: /app/api/query-attendance/route.ts
 
-function initDatabase() {
-  const dbPath = path.join(process.cwd(), "attendance.db")
-  const db = new Database(dbPath)
-  return db
-}
+import { NextResponse } from "next/server"
+import { Pool } from "pg"
+import { NextRequest } from "next/server"
+
+// ————————————————
+// 1) Initialize a new PG pool (or import an existing one).
+//    Make sure DATABASE_URL is set in .env.local or your deployment environment.
+// ————————————————
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+})
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const rollNo = searchParams.get("rollNo")
+    let rollNo = searchParams.get("rollNo")
 
     if (!rollNo) {
-      return NextResponse.json({ error: "Roll number is required" }, { status: 400 })
+      return NextResponse.json(
+        { error: "Roll number is required" },
+        { status: 400 },
+      )
     }
 
-    const db = initDatabase()
+    // Since we store roll_no in uppercase on insert, normalize here:
+    rollNo = rollNo.toUpperCase()
 
-    // Get all records for the roll number
-    const records = db
-      .prepare(`
-      SELECT * FROM attendance 
-      WHERE roll_no = ? 
-      ORDER BY year DESC, month DESC
-    `)
-      .all(rollNo)
+    // —————————————————————————————
+    // 2) Query Postgres for all attendance rows matching that roll number
+    //    We’ll order by year DESC, month DESC (month is TEXT, same as before).
+    // —————————————————————————————
+    const queryText = `
+      SELECT 
+        id,
+        roll_no,
+        student_name,
+        month,
+        year,
+        days_present,
+        total_amount,
+        created_at
+      FROM attendance
+      WHERE roll_no = $1
+      ORDER BY year DESC, month DESC;
+    `
+    const { rows: records } = await pool.query(queryText, [rollNo])
 
     if (records.length === 0) {
-      db.close()
       return NextResponse.json(
-        {
-          error: "No records found for this roll number",
-        },
+        { error: "No records found for this roll number" },
         { status: 404 },
       )
     }
 
-    // Get student name from the first record
+    // Take the student_name from the first record (they should all match)
     const studentName = records[0].student_name
 
-    // Calculate totals
-    const totalDaysPresent = records.reduce((sum: number, record: any) => sum + record.days_present, 0)
-    const totalAmount = records.reduce((sum: number, record: any) => sum + record.total_amount, 0)
-
-    db.close()
+    // Compute totals (days_present, total_amount) across all months
+    const totalDaysPresent = records.reduce(
+      (sum, rec) => sum + Number(rec.days_present),
+      0,
+    )
+    const totalAmount = records.reduce(
+      (sum, rec) => sum + Number(rec.total_amount),
+      0,
+    )
 
     return NextResponse.json({
       roll_no: rollNo,
@@ -57,9 +78,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error("Query error:", error)
     return NextResponse.json(
-      {
-        error: "Failed to query attendance data",
-      },
+      { error: "Failed to query attendance data" },
       { status: 500 },
     )
   }
