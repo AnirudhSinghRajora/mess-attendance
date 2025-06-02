@@ -36,6 +36,11 @@ export default function MessAttendanceApp() {
   const [querying, setQuerying] = useState(false)
   const [uploadMessage, setUploadMessage] = useState("")
   const [queryYear, setQueryYear] = useState<string>("")
+  const [sheets, setSheets] = useState<{ month: string; year: number }[]>([])
+  const [sheetsLoading, setSheetsLoading] = useState(false)
+  const [sheetsError, setSheetsError] = useState<string | null>(null)
+  const [deletingSheet, setDeletingSheet] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const router = useRouter()
 
@@ -102,6 +107,7 @@ export default function MessAttendanceApp() {
       // Reset file input
       const fileInput = document.getElementById("file-upload") as HTMLInputElement
       if (fileInput) fileInput.value = ""
+      await fetchSheets();
     }
     setUploading(false)
   }
@@ -144,6 +150,48 @@ export default function MessAttendanceApp() {
       router.push('/login')
     }
   }
+
+  // Fetch uploaded sheets
+  const fetchSheets = async () => {
+    setSheetsLoading(true);
+    setSheetsError(null);
+    try {
+      const res = await fetch('/api/uploaded-sheets');
+      if (!res.ok) throw new Error('Failed to fetch uploaded sheets');
+      const data = await res.json();
+      setSheets(data);
+    } catch (err: any) {
+      setSheetsError(err.message || 'Unknown error');
+    } finally {
+      setSheetsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSheets();
+  }, []);
+
+  // Delete a sheet
+  const handleDeleteSheet = async (month: string, year: number) => {
+    setDeletingSheet(`${month}-${year}`);
+    setDeleteError(null);
+    try {
+      const res = await fetch('/api/delete-attendance', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ month, year }),
+      });
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        throw new Error(result.error || result.message || 'Failed to delete sheet');
+      }
+      await fetchSheets();
+    } catch (err: any) {
+      setDeleteError(err.message || 'Unknown error');
+    } finally {
+      setDeletingSheet(null);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-50 p-4">
@@ -206,6 +254,48 @@ export default function MessAttendanceApp() {
                 {uploadMessage}
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        {/* Uploaded Sheets Section */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="w-5 h-5" />
+              Uploaded Sheets
+            </CardTitle>
+            <CardDescription>List of all uploaded attendance sheets by month and year</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {sheetsLoading ? (
+              <div className="text-gray-500">Loading sheets...</div>
+            ) : sheetsError ? (
+              <div className="text-red-600">{sheetsError}</div>
+            ) : sheets.length === 0 ? (
+              <div className="text-gray-500">No sheets uploaded yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {[...sheets]
+                  .sort((a, b) => {
+                    if (a.year !== b.year) return b.year - a.year;
+                    return getMonthOrder(a.month) - getMonthOrder(b.month);
+                  })
+                  .map(({ month, year }) => (
+                    <div key={`${month}-${year}`} className="flex items-center justify-between bg-gray-50 rounded p-3 border">
+                      <span className="font-medium">{month} {year}</span>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={deletingSheet === `${month}-${year}`}
+                        onClick={() => handleDeleteSheet(month, year)}
+                      >
+                        {deletingSheet === `${month}-${year}` ? 'Deleting...' : 'Delete'}
+                      </Button>
+                    </div>
+                  ))}
+              </div>
+            )}
+            {deleteError && <div className="text-red-600 mt-2">{deleteError}</div>}
           </CardContent>
         </Card>
 
