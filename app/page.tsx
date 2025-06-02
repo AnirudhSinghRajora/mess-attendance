@@ -35,8 +35,18 @@ export default function MessAttendanceApp() {
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
   const [querying, setQuerying] = useState(false)
   const [uploadMessage, setUploadMessage] = useState("")
+  const [queryYear, setQueryYear] = useState<string>("")
 
   const router = useRouter()
+
+  // Helper function to get month order for sorting
+  const getMonthOrder = (monthName: string): number => {
+    const monthMap: { [key: string]: number } = {
+      "January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
+      "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12,
+    }
+    return monthMap[monthName] || 0; // Return 0 for unknown months to put them at the beginning
+  };
 
   useEffect(() => {
     if (typeof window !== 'undefined') { // Ensure localStorage is available
@@ -97,7 +107,7 @@ export default function MessAttendanceApp() {
   }
 
   const handleQuery = async () => {
-    if (!rollNo.trim()) {
+    if (!rollNo.trim() && !queryYear.trim()) {
       return
     }
 
@@ -105,7 +115,15 @@ export default function MessAttendanceApp() {
     setQueryResult(null)
 
     try {
-      const response = await fetch(`/api/query-attendance?rollNo=${encodeURIComponent(rollNo.trim())}`)
+      let queryString = `?`
+      if (rollNo.trim()) {
+        queryString += `rollNo=${encodeURIComponent(rollNo.trim())}`
+      }
+      if (queryYear.trim()) {
+        queryString += `${rollNo.trim() ? '&' : ''}year=${encodeURIComponent(queryYear.trim())}`
+      }
+
+      const response = await fetch(`/api/query-attendance${queryString}`)
       const result = await response.json()
 
       if (response.ok) {
@@ -214,8 +232,19 @@ export default function MessAttendanceApp() {
                   onKeyPress={(e) => e.key === "Enter" && handleQuery()}
                 />
               </div>
+              <div className="flex-1">
+                <Label htmlFor="query-year">Year (Optional)</Label>
+                <Input
+                  id="query-year"
+                  type="number"
+                  value={queryYear}
+                  onChange={(e) => setQueryYear(e.target.value)}
+                  placeholder="e.g., 2023"
+                  onKeyPress={(e) => e.key === "Enter" && handleQuery()}
+                />
+              </div>
               <div className="flex items-end">
-                <Button onClick={handleQuery} disabled={!rollNo.trim() || querying}>
+                <Button onClick={handleQuery} disabled={(!rollNo.trim() && !queryYear.trim()) || querying}>
                   {querying ? (
                     <>
                       <Users className="w-4 h-4 mr-2 animate-spin" />
@@ -270,7 +299,15 @@ export default function MessAttendanceApp() {
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-2 max-h-64 overflow-y-auto">
-                      {queryResult.months_data.map((record) => (
+                      {queryResult.months_data
+                        .sort((a, b) => {
+                          // Sort by year first (descending), then by month (ascending)
+                          if (a.year !== b.year) {
+                            return b.year - a.year;
+                          }
+                          return getMonthOrder(a.month) - getMonthOrder(b.month);
+                        })
+                        .map((record) => (
                         <div key={record.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
                           <div>
                             <div className="font-medium">
@@ -289,9 +326,9 @@ export default function MessAttendanceApp() {
               </div>
             )}
 
-            {querying === false && rollNo.trim() && !queryResult && (
+            {querying === false && !queryResult && (rollNo.trim() || queryYear.trim()) && (
               <div className="p-3 rounded-md text-sm bg-yellow-50 text-yellow-700 border border-yellow-200">
-                No records found for roll number: {rollNo}
+                No records found for the given criteria.
               </div>
             )}
           </CardContent>

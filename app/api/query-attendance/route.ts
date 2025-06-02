@@ -4,6 +4,17 @@ import { NextResponse } from "next/server"
 import { Pool } from "pg"
 import { NextRequest } from "next/server"
 
+interface AttendanceRecord {
+  id: number
+  roll_no: string
+  student_name: string
+  month: string
+  year: number
+  days_present: number
+  total_amount: number
+  created_at: string
+}
+
 // ————————————————
 // 1) Initialize a new PG pool (or import an existing one).
 //    Make sure DATABASE_URL is set in .env.local or your deployment environment.
@@ -17,22 +28,25 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     let rollNo = searchParams.get("rollNo")
+    let queryYear = searchParams.get("year")
 
-    if (!rollNo) {
+    if (!rollNo && !queryYear) {
       return NextResponse.json(
-        { error: "Roll number is required" },
+        { error: "Roll number or year is required" },
         { status: 400 },
       )
     }
 
     // Since we store roll_no in uppercase on insert, normalize here:
-    rollNo = rollNo.toUpperCase()
+    if (rollNo) {
+      rollNo = rollNo.toUpperCase()
+    }
 
     // —————————————————————————————
     // 2) Query Postgres for all attendance rows matching that roll number
-    //    We’ll order by year DESC, month DESC (month is TEXT, same as before).
+    //    We'll order by year DESC, month DESC (month is TEXT, same as before).
     // —————————————————————————————
-    const queryText = `
+    let queryText = `
       SELECT 
         id,
         roll_no,
@@ -43,29 +57,61 @@ export async function GET(request: NextRequest) {
         total_amount,
         created_at
       FROM attendance
-      WHERE roll_no = $1
-      ORDER BY year DESC, month DESC;
     `
-    console.log("Running query for:", rollNo)
-    const { rows: records } = await pool.query(queryText, [rollNo])
+    const queryParams: (string | number)[] = []
+    const conditions: string[] = []
+
+    if (rollNo) {
+      conditions.push("roll_no = $1")
+      queryParams.push(rollNo)
+    }
+
+    if (queryYear) {
+      // Assuming queryYear is a valid number, convert to integer
+      const parsedYear = parseInt(queryYear, 10)
+      if (!isNaN(parsedYear)) {
+        conditions.push(`year = $${queryParams.length + 1}`)
+        queryParams.push(parsedYear)
+      } else {
+        return NextResponse.json(
+          { error: "Invalid year provided" },
+          { status: 400 },
+        )
+      }
+    }
+
+    if (conditions.length > 0) {
+      queryText += ` WHERE ${conditions.join(' AND ')}`
+    }
+
+    queryText += ` ORDER BY year DESC, month DESC;`
+
+    console.log("Running query with:", { rollNo, queryYear })
+    const { rows: records } = await pool.query(queryText, queryParams)
 
     if (records.length === 0) {
       return NextResponse.json(
-        { error: "No records found for this roll number" },
+        { error: "No records found for this roll number or year" },
         { status: 404 },
       )
     }
 
-    // Take the student_name from the first record (they should all match)
-    const studentName = records[0].student_name
+    let studentName = "Unknown Student"
+    if (rollNo && records.length > 0) {
+      studentName = records[0].student_name
+    } else if (records.length > 0) {
+      // If only year is queried, we might not have a specific studentName from input
+      // Use the student name from the first record found
+      studentName = records[0].student_name
+    }
 
     // Compute totals (days_present, total_amount) across all months
     const totalDaysPresent = records.reduce(
-      (sum, rec) => sum + Number(rec.days_present),
+      (sum: number, rec: AttendanceRecord) => sum + Number(rec.days_present),
       0,
     )
     const totalAmount = records.reduce(
-      (sum, rec) => sum + Number(rec.total_amount),
+      (sum: number, rec: AttendanceRecord) => sum + Number(rec.total_amount),
       0,
     )
 
@@ -76,7 +122,7 @@ export async function GET(request: NextRequest) {
       total_amount: totalAmount,
       months_data: records,
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error("Query error:", error)
     return NextResponse.json(
       { error: "Internal Server Error", details: error.message },
