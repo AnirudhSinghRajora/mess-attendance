@@ -132,8 +132,8 @@ export default function MessAttendanceApp() {
       if (queryYear.trim()) {
         queryString += `${rollNo.trim() ? '&' : ''}year=${encodeURIComponent(queryYear.trim())}`
       }
-      if (queryMess.trim()) {
-        queryString += `${(rollNo.trim() || queryYear.trim()) ? '&' : ''}mess=${encodeURIComponent(queryMess.trim())}`
+      if (queryMess && queryMess !== "") {
+        queryString += `${(rollNo.trim() || queryYear.trim()) ? '&' : ''}mess=${encodeURIComponent(queryMess)}`
       }
 
       const response = await fetch(`/api/query-attendance${queryString}`)
