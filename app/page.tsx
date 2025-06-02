@@ -28,7 +28,7 @@ interface QueryResult {
 }
 
 export default function MessAttendanceApp() {
-  const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<FileList | null>(null)
   const [uploading, setUploading] = useState(false)
   const [rollNo, setRollNo] = useState("")
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
@@ -36,41 +36,52 @@ export default function MessAttendanceApp() {
   const [uploadMessage, setUploadMessage] = useState("")
 
   const handleFileUpload = async () => {
-    if (!file) {
-      setUploadMessage("Please select a file")
+    if (!files || files.length === 0) {
+      setUploadMessage("Please select at least one file.")
       return
     }
 
     setUploading(true)
     setUploadMessage("")
 
-    const formData = new FormData()
-    formData.append("file", file)
+    const allResults: string[] = []
+    let hasError = false
 
-    try {
-      const response = await fetch("/api/upload-attendance", {
-        method: "POST",
-        body: formData,
-      })
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const formData = new FormData()
+      formData.append("file", file)
 
-      const result = await response.json()
+      try {
+        const response = await fetch("/api/upload-attendance", {
+          method: "POST",
+          body: formData,
+        })
 
-      if (response.ok) {
-        setUploadMessage(
-          `Successfully uploaded! Processed ${result.recordsProcessed} records for ${result.month} ${result.year}.`,
-        )
-        setFile(null)
-        // Reset file input
-        const fileInput = document.getElementById("file-upload") as HTMLInputElement
-        if (fileInput) fileInput.value = ""
-      } else {
-        setUploadMessage(`Error: ${result.error}`)
+        const result = await response.json()
+
+        if (response.ok) {
+          allResults.push(
+            `Successfully uploaded ${file.name}: Processed ${result.recordsProcessed} records for ${result.month} ${result.year}.`,
+          )
+        } else {
+          allResults.push(`Error uploading ${file.name}: ${result.error}`)
+          hasError = true
+        }
+      } catch (error) {
+        allResults.push(`Upload failed for ${file.name}: ${error.message || "Unknown error"}`)
+        hasError = true
       }
-    } catch (error) {
-      setUploadMessage("Upload failed. Please try again.")
-    } finally {
-      setUploading(false)
     }
+
+    setUploadMessage(allResults.join("\n"))
+    if (!hasError) {
+      setFiles(null)
+      // Reset file input
+      const fileInput = document.getElementById("file-upload") as HTMLInputElement
+      if (fileInput) fileInput.value = ""
+    }
+    setUploading(false)
   }
 
   const handleQuery = async () => {
@@ -121,11 +132,12 @@ export default function MessAttendanceApp() {
                 id="file-upload"
                 type="file"
                 accept=".xlsx,.xls"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                multiple
+                onChange={(e) => setFiles(e.target.files)}
                 className="cursor-pointer"
               />
             </div>
-            <Button onClick={handleFileUpload} disabled={!file || uploading} className="w-full">
+            <Button onClick={handleFileUpload} disabled={!files || files.length === 0 || uploading} className="w-full">
               {uploading ? (
                 <>
                   <FileSpreadsheet className="w-4 h-4 mr-2 animate-spin" />
