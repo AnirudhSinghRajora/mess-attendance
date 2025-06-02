@@ -10,9 +10,9 @@ const pool = new Pool({
 export async function GET() {
   try {
     const queryText = `
-      SELECT DISTINCT month, year
+      SELECT DISTINCT month, year, mess
       FROM attendance
-      ORDER BY year DESC, month ASC;
+      ORDER BY mess ASC, year DESC, month ASC;
     `
     const { rows } = await pool.query(queryText)
     return NextResponse.json(rows)

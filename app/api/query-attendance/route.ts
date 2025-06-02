@@ -29,6 +29,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     let rollNo = searchParams.get("rollNo")
     let queryYear = searchParams.get("year")
+    let mess = searchParams.get("mess")
 
     if (!rollNo && !queryYear) {
       return NextResponse.json(
@@ -53,6 +54,7 @@ export async function GET(request: NextRequest) {
         student_name,
         month,
         year,
+        mess,
         days_present,
         total_amount,
         created_at
@@ -62,7 +64,7 @@ export async function GET(request: NextRequest) {
     const conditions: string[] = []
 
     if (rollNo) {
-      conditions.push("roll_no = $1")
+      conditions.push(`roll_no = $${queryParams.length + 1}`)
       queryParams.push(rollNo)
     }
 
@@ -78,6 +80,11 @@ export async function GET(request: NextRequest) {
           { status: 400 },
         )
       }
+    }
+
+    if (mess) {
+      conditions.push(`mess = $${queryParams.length + 1}`)
+      queryParams.push(mess)
     }
 
     if (conditions.length > 0) {

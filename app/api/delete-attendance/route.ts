@@ -9,21 +9,21 @@ const pool = new Pool({
 
 export async function DELETE(request: Request) {
   try {
-    const { month, year } = await request.json()
+    const { month, year, mess } = await request.json()
 
-    if (!month || !year) {
+    if (!month || !year || !mess) {
       return NextResponse.json(
-        { error: "Month and year are required" },
+        { error: "Month, year, and mess are required" },
         { status: 400 },
       )
     }
 
     const queryText = `
       DELETE FROM attendance
-      WHERE month = $1 AND year = $2
+      WHERE month = $1 AND year = $2 AND mess = $3
       RETURNING *;
     `
-    const { rowCount } = await pool.query(queryText, [month, year])
+    const { rowCount } = await pool.query(queryText, [month, year, mess])
 
     if (rowCount > 0) {
       return NextResponse.json({ success: true, message: `Deleted ${rowCount} records for ${month} ${year}.` })

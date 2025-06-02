@@ -18,6 +18,7 @@ interface AttendanceRecord {
   days_present: number
   total_amount: number
   created_at: string
+  mess: string
 }
 
 interface QueryResult {
@@ -36,11 +37,13 @@ export default function MessAttendanceApp() {
   const [querying, setQuerying] = useState(false)
   const [uploadMessage, setUploadMessage] = useState("")
   const [queryYear, setQueryYear] = useState<string>("")
-  const [sheets, setSheets] = useState<{ month: string; year: number }[]>([])
+  const [sheets, setSheets] = useState<{ month: string; year: number; mess: string }[]>([])
   const [sheetsLoading, setSheetsLoading] = useState(false)
   const [sheetsError, setSheetsError] = useState<string | null>(null)
   const [deletingSheet, setDeletingSheet] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [selectedMess, setSelectedMess] = useState<string>("college")
+  const [queryMess, setQueryMess] = useState<string>("")
 
   const router = useRouter()
 
@@ -78,6 +81,7 @@ export default function MessAttendanceApp() {
       const file = files[i]
       const formData = new FormData()
       formData.append("file", file)
+      formData.append("mess", selectedMess)
 
       try {
         const response = await fetch("/api/upload-attendance", {
@@ -113,7 +117,7 @@ export default function MessAttendanceApp() {
   }
 
   const handleQuery = async () => {
-    if (!rollNo.trim() && !queryYear.trim()) {
+    if (!rollNo.trim() && !queryYear.trim() && !queryMess.trim()) {
       return
     }
 
@@ -127,6 +131,9 @@ export default function MessAttendanceApp() {
       }
       if (queryYear.trim()) {
         queryString += `${rollNo.trim() ? '&' : ''}year=${encodeURIComponent(queryYear.trim())}`
+      }
+      if (queryMess.trim()) {
+        queryString += `${(rollNo.trim() || queryYear.trim()) ? '&' : ''}mess=${encodeURIComponent(queryMess.trim())}`
       }
 
       const response = await fetch(`/api/query-attendance${queryString}`)
@@ -172,14 +179,14 @@ export default function MessAttendanceApp() {
   }, []);
 
   // Delete a sheet
-  const handleDeleteSheet = async (month: string, year: number) => {
-    setDeletingSheet(`${month}-${year}`);
+  const handleDeleteSheet = async (month: string, year: number, mess: string) => {
+    setDeletingSheet(`${month}-${year}-${mess}`);
     setDeleteError(null);
     try {
       const res = await fetch('/api/delete-attendance', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ month, year }),
+        body: JSON.stringify({ month, year, mess }),
       });
       const result = await res.json();
       if (!res.ok || !result.success) {
@@ -219,6 +226,18 @@ export default function MessAttendanceApp() {
             <CardDescription>Upload monthly Excel (.xlsx) files containing student attendance data</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="mess-select">Select Mess</Label>
+              <select
+                id="mess-select"
+                value={selectedMess}
+                onChange={e => setSelectedMess(e.target.value)}
+                className="block w-full border rounded p-2"
+              >
+                <option value="college">College</option>
+                <option value="Saroj">Saroj</option>
+              </select>
+            </div>
             <div className="space-y-2">
               <Label htmlFor="file-upload">Select Excel File</Label>
               <Input
@@ -264,7 +283,7 @@ export default function MessAttendanceApp() {
               <FileSpreadsheet className="w-5 h-5" />
               Uploaded Sheets
             </CardTitle>
-            <CardDescription>List of all uploaded attendance sheets by month and year</CardDescription>
+            <CardDescription>List of all uploaded attendance sheets by month, year, and mess</CardDescription>
           </CardHeader>
           <CardContent>
             {sheetsLoading ? (
@@ -277,19 +296,20 @@ export default function MessAttendanceApp() {
               <div className="space-y-2">
                 {[...sheets]
                   .sort((a, b) => {
+                    if (a.mess !== b.mess) return a.mess.localeCompare(b.mess);
                     if (a.year !== b.year) return b.year - a.year;
                     return getMonthOrder(a.month) - getMonthOrder(b.month);
                   })
-                  .map(({ month, year }) => (
-                    <div key={`${month}-${year}`} className="flex items-center justify-between bg-gray-50 rounded p-3 border">
-                      <span className="font-medium">{month} {year}</span>
+                  .map(({ month, year, mess }) => (
+                    <div key={`${month}-${year}-${mess}`} className="flex items-center justify-between bg-gray-50 rounded p-3 border">
+                      <span className="font-medium">{month} {year} <span className="ml-2 px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs">{mess}</span></span>
                       <Button
                         variant="destructive"
                         size="sm"
-                        disabled={deletingSheet === `${month}-${year}`}
-                        onClick={() => handleDeleteSheet(month, year)}
+                        disabled={deletingSheet === `${month}-${year}-${mess}`}
+                        onClick={() => handleDeleteSheet(month, year, mess)}
                       >
-                        {deletingSheet === `${month}-${year}` ? 'Deleting...' : 'Delete'}
+                        {deletingSheet === `${month}-${year}-${mess}` ? 'Deleting...' : 'Delete'}
                       </Button>
                     </div>
                   ))}
@@ -333,8 +353,21 @@ export default function MessAttendanceApp() {
                   onKeyPress={(e) => e.key === "Enter" && handleQuery()}
                 />
               </div>
+              <div className="flex-1">
+                <Label htmlFor="query-mess">Mess (Optional)</Label>
+                <select
+                  id="query-mess"
+                  value={queryMess}
+                  onChange={e => setQueryMess(e.target.value)}
+                  className="block w-full border rounded p-2"
+                >
+                  <option value="">All</option>
+                  <option value="college">College</option>
+                  <option value="Saroj">Saroj</option>
+                </select>
+              </div>
               <div className="flex items-end">
-                <Button onClick={handleQuery} disabled={(!rollNo.trim() && !queryYear.trim()) || querying}>
+                <Button onClick={handleQuery} disabled={(!rollNo.trim() && !queryYear.trim() && !queryMess.trim()) || querying}>
                   {querying ? (
                     <>
                       <Users className="w-4 h-4 mr-2 animate-spin" />
@@ -401,7 +434,7 @@ export default function MessAttendanceApp() {
                         <div key={record.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
                           <div>
                             <div className="font-medium">
-                              {record.month} {record.year}
+                              {record.month} {record.year} <span className="ml-2 px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs">{record.mess}</span>
                             </div>
                             <div className="text-sm text-gray-600">{record.days_present} days present</div>
                           </div>
@@ -416,7 +449,7 @@ export default function MessAttendanceApp() {
               </div>
             )}
 
-            {querying === false && !queryResult && (rollNo.trim() || queryYear.trim()) && (
+            {querying === false && !queryResult && (rollNo.trim() || queryYear.trim() || queryMess.trim()) && (
               <div className="p-3 rounded-md text-sm bg-yellow-50 text-yellow-700 border border-yellow-200">
                 No records found for the given criteria.
               </div>

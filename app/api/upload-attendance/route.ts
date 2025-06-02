@@ -15,7 +15,7 @@ const pool = new Pool({
 
 // ---------------------------------------------------------
 // 2) (Optional) On cold start, create the `attendance` table
-//    if it doesn’t already exist. This runs only once per
+//    if it doesn't already exist. This runs only once per
 //    server‐process, so subsequent calls will be fast.
 // ---------------------------------------------------------
 ;(async () => {
@@ -26,10 +26,11 @@ const pool = new Pool({
       student_name  TEXT NOT NULL,
       month         TEXT NOT NULL,
       year          INTEGER NOT NULL,
+      mess          TEXT NOT NULL,
       days_present  INTEGER NOT NULL,
       total_amount  NUMERIC NOT NULL,
       created_at    TIMESTAMPTZ DEFAULT now(),
-      UNIQUE (roll_no, month, year)
+      UNIQUE (roll_no, month, year, mess)
     );
   `
   try {
@@ -41,13 +42,17 @@ const pool = new Pool({
 })()
 
 // ---------------------------------------------------------
-// 3) The POST handler: parse Excel, find “Total Amount” col,
+// 3) The POST handler: parse Excel, find "Total Amount" col,
 //    discover headers, then upsert each student row.
 // ---------------------------------------------------------
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const file = formData.get("file") as File
+    const mess = formData.get("mess") as string | null;
+    if (!mess || (mess !== "college" && mess !== "Saroj")) {
+      return NextResponse.json({ error: "Mess must be 'college' or 'Saroj'" }, { status: 400 });
+    }
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 })
     }
@@ -82,7 +87,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ------------------------------------------
-    // STEP 1: EXTRACT “Month” and “Year” labels
+    // STEP 1: EXTRACT "Month" and "Year" labels
     //         (scan up to the first 100 rows)
     // ------------------------------------------
     let month = "Unknown"
@@ -98,7 +103,7 @@ export async function POST(request: NextRequest) {
         const raw = String(row[j] || "").trim()
         const lower = raw.toLowerCase()
 
-        // If the cell text is exactly “month” or “month:”
+        // If the cell text is exactly "month" or "month:"
         if (!foundMonth && (lower === "month" || lower === "month:")) {
           for (let k = j + 1; k < row.length; k++) {
             const candidate = String(row[k] || "").trim()
@@ -110,7 +115,7 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // If the cell text is exactly “year” or “year:”
+        // If the cell text is exactly "year" or "year:"
         if (!foundYear && (lower === "year" || lower === "year:")) {
           for (let k = j + 1; k < row.length; k++) {
             const candidate = String(row[k] || "").trim()
@@ -129,18 +134,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ------------------------------------------
-    // STEP 2: LOCATE the “Student Header” row
+    // STEP 2: LOCATE the "Student Header" row
     //
     //   • That row must contain either:
-    //        – “Student Name” & “Roll No.”   (old format) 
-    //     OR – “Name” & “Enrollment No”      (new format)
+    //        – "Student Name" & "Roll No."   (old format) 
+    //     OR – "Name" & "Enrollment No"      (new format)
     // ------------------------------------------
     let headerRowIndex = -1
     for (let i = 0; i < fullData.length; i++) {
       const row = fullData[i]
       if (!row) continue
 
-      // Does this row contain “student name” + “roll no.” ?
+      // Does this row contain "student name" + "roll no." ?
       const hasOldName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "student name",
       )
@@ -148,7 +153,7 @@ export async function POST(request: NextRequest) {
         (c) => String(c || "").trim().toLowerCase() === "roll no.",
       )
 
-      // OR does it contain “name” + “enrollment no” ?
+      // OR does it contain "name" + "enrollment no" ?
       const hasNewName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "name",
       )
@@ -178,11 +183,11 @@ export async function POST(request: NextRequest) {
     // ------------------------------------------
     // STEP 3: DETERMINE COLUMN INDICES
     //
-    //   (a) student_name column → “Student Name” OR “Name”
-    //   (b) roll_no column      → “Roll No.” OR “Enrollment No”
-    //   (c) days_present (P)    → look for “P” in nextHeaderRow
-    //   (d) days_absent  (A)    → look for “A” in nextHeaderRow
-    //   (e) total_amount        → SCAN the entire sheet for “Total Amount”
+    //   (a) student_name column → "Student Name" OR "Name"
+    //   (b) roll_no column      → "Roll No." OR "Enrollment No"
+    //   (c) days_present (P)    → look for "P" in nextHeaderRow
+    //   (d) days_absent  (A)    → look for "A" in nextHeaderRow
+    //   (e) total_amount        → SCAN from the student header row upwards for "Total Amount"
     // ------------------------------------------
 
     // (a) student_name
@@ -197,28 +202,28 @@ export async function POST(request: NextRequest) {
       return txt === "roll no." || txt === "enrollment no"
     })
 
-    // (c) present (“P”) in the nextHeaderRow
+    // (c) present ("P") in the nextHeaderRow
     const presentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "p"
     })
 
-    // (d) absent (“A”) in the nextHeaderRow
+    // (d) absent ("A") in the nextHeaderRow
     const absentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "a"
     })
 
-    // (e) total_amount: scan the whole sheet for an *exact* "total amount"
-    let totalAmountColIndex = -1
-    for (let i = 0; i < fullData.length; i++) {
-      const row = fullData[i]
-      if (!row) continue
+    // (e) total_amount: scan from the student header row upwards for "Total Amount"
+    let totalAmountColIndex = -1;
+    for (let i = headerRowIndex; i >= 0; i--) {
+      const row = fullData[i];
+      if (!row) continue;
       for (let j = 0; j < row.length; j++) {
         if (String(row[j] || "").trim().toLowerCase() === "total amount") {
-          totalAmountColIndex = j
-          break
+          totalAmountColIndex = j;
+          break;
         }
       }
-      if (totalAmountColIndex !== -1) break
+      if (totalAmountColIndex !== -1) break;
     }
 
     // If any required column was not found, return an error
@@ -242,17 +247,17 @@ export async function POST(request: NextRequest) {
     // STEP 4: LOOP OVER STUDENT ROWS (start two rows below headerRowIndex)
     //
     //   • Uppercase rollNo & studentName before storing
-    //   • daysPresent = cell under “P”
-    //   • totalAmount = cell under “Total Amount” (found above)
+    //   • daysPresent = cell under "P"
+    //   • totalAmount = cell under "Total Amount" (found above)
     // ------------------------------------------
     let recordsProcessed = 0
 
     // Prepare a single UPSERT statement for Postgres
     const upsertSQL = `
       INSERT INTO attendance
-        (roll_no, student_name, month, year, days_present, total_amount)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      ON CONFLICT (roll_no, month, year)
+        (roll_no, student_name, month, year, mess, days_present, total_amount)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (roll_no, month, year, mess)
       DO UPDATE SET
         student_name  = EXCLUDED.student_name,
         days_present  = EXCLUDED.days_present,
@@ -280,15 +285,15 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      // FORCE uppercase so “lit2024042” → “LIT2024042”
+      // FORCE uppercase so "lit2024042" → "LIT2024042"
       studentName = studentName.toUpperCase()
       rollNo = rollNo.toUpperCase()
 
-      // Read “P” directly
+      // Read "P" directly
       const daysPresent =
         Number.parseInt(String(row[presentColIndex] || "0"), 10) || 0
 
-      // Read “Total Amount” from the column we discovered above
+      // Read "Total Amount" from the column we discovered above
       const totalAmount =
         Number.parseFloat(String(row[totalAmountColIndex] || "0")) || 0
 
@@ -298,6 +303,7 @@ export async function POST(request: NextRequest) {
           studentName,
           month,
           year,
+          mess,
           daysPresent,
           totalAmount,
         ])
