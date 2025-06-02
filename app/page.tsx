@@ -7,7 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import { Upload, Search, FileSpreadsheet, Users, Calendar, LogOut } from "lucide-react"
+import { Upload, Search, FileSpreadsheet, Users, Calendar, LogOut, List } from "lucide-react"
 
 interface AttendanceRecord {
   id: number
@@ -215,6 +215,12 @@ export default function MessAttendanceApp() {
             <LogOut className="w-5 h-5" />
           </Button>
         </div>
+        <div className="flex justify-end">
+          <Button variant="outline" onClick={() => router.push("/uploaded-sheets")}
+            className="flex items-center gap-2">
+            <List className="w-4 h-4" /> Uploaded Sheets
+          </Button>
+        </div>
 
         {/* Upload Section */}
         <Card>
@@ -273,49 +279,6 @@ export default function MessAttendanceApp() {
                 {uploadMessage}
               </div>
             )}
-          </CardContent>
-        </Card>
-
-        {/* Uploaded Sheets Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <FileSpreadsheet className="w-5 h-5" />
-              Uploaded Sheets
-            </CardTitle>
-            <CardDescription>List of all uploaded attendance sheets by month, year, and mess</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {sheetsLoading ? (
-              <div className="text-gray-500">Loading sheets...</div>
-            ) : sheetsError ? (
-              <div className="text-red-600">{sheetsError}</div>
-            ) : sheets.length === 0 ? (
-              <div className="text-gray-500">No sheets uploaded yet.</div>
-            ) : (
-              <div className="space-y-2">
-                {[...sheets]
-                  .sort((a, b) => {
-                    if (a.mess !== b.mess) return a.mess.localeCompare(b.mess);
-                    if (a.year !== b.year) return b.year - a.year;
-                    return getMonthOrder(a.month) - getMonthOrder(b.month);
-                  })
-                  .map(({ month, year, mess }) => (
-                    <div key={`${month}-${year}-${mess}`} className="flex items-center justify-between bg-gray-50 rounded p-3 border">
-                      <span className="font-medium">{month} {year} <span className="ml-2 px-2 py-1 rounded bg-blue-100 text-blue-800 text-xs">{mess}</span></span>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        disabled={deletingSheet === `${month}-${year}-${mess}`}
-                        onClick={() => handleDeleteSheet(month, year, mess)}
-                      >
-                        {deletingSheet === `${month}-${year}-${mess}` ? 'Deleting...' : 'Delete'}
-                      </Button>
-                    </div>
-                  ))}
-              </div>
-            )}
-            {deleteError && <div className="text-red-600 mt-2">{deleteError}</div>}
           </CardContent>
         </Card>
 
