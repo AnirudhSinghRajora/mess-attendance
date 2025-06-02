@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useRouter } from 'next/navigation'
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
-import { Upload, Search, FileSpreadsheet, Users, Calendar } from "lucide-react"
+import { Upload, Search, FileSpreadsheet, Users, Calendar, LogOut } from "lucide-react"
 
 interface AttendanceRecord {
   id: number
@@ -34,6 +35,17 @@ export default function MessAttendanceApp() {
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null)
   const [querying, setQuerying] = useState(false)
   const [uploadMessage, setUploadMessage] = useState("")
+
+  const router = useRouter()
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') { // Ensure localStorage is available
+      const isAuthenticated = localStorage.getItem('isAuthenticated')
+      if (isAuthenticated !== 'true') {
+        router.push('/login')
+      }
+    }
+  }, [router])
 
   const handleFileUpload = async () => {
     if (!files || files.length === 0) {
@@ -108,12 +120,27 @@ export default function MessAttendanceApp() {
     }
   }
 
+  const handleLogout = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('isAuthenticated')
+      router.push('/login')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-4">
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="text-center space-y-2">
+        <div className="text-center space-y-2 relative">
           <h1 className="text-3xl font-bold text-gray-900">Mess Attendance Management</h1>
           <p className="text-gray-600">Upload Excel sheets and query student attendance data</p>
+          <Button
+            onClick={handleLogout}
+            variant="ghost"
+            className="absolute top-0 right-0 text-gray-600 hover:text-red-500"
+            aria-label="Logout"
+          >
+            <LogOut className="w-5 h-5" />
+          </Button>
         </div>
 
         {/* Upload Section */}
