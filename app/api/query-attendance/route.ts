@@ -46,6 +46,7 @@ export async function GET(request: NextRequest) {
       WHERE roll_no = $1
       ORDER BY year DESC, month DESC;
     `
+    console.log("Running query for:", rollNo)
     const { rows: records } = await pool.query(queryText, [rollNo])
 
     if (records.length === 0) {
@@ -78,7 +79,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error("Query error:", error)
     return NextResponse.json(
-      { error: "Failed to query attendance data" },
+      { error: "Internal Server Error", details: error.message },
       { status: 500 },
     )
   }
