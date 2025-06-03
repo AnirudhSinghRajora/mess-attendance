@@ -1,34 +1,58 @@
-import { type NextRequest, NextResponse } from "next/server"
+// File: /app/api/upload-attendance/route.ts
+
+import { NextResponse } from "next/server"
+import { Pool } from "pg"
 import * as XLSX from "xlsx"
-import Database from "better-sqlite3"
-import path from "path"
+import { NextRequest } from "next/server"
 
-// Initialize (or create) the SQLite database and attendance table
-function initDatabase() {
-  const dbPath = path.join(process.cwd(), "attendance.db")
-  const db = new Database(dbPath)
+// ---------------------------------------------------------
+// 1) Create a single Pool using your DATABASE_URL variable
+// ---------------------------------------------------------
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }, // required for Supabase
+})
 
-  db.exec(`
+// ---------------------------------------------------------
+// 2) (Optional) On cold start, create the `attendance` table
+//    if it doesn't already exist. This runs only once per
+//    server‐process, so subsequent calls will be fast.
+// ---------------------------------------------------------
+;(async () => {
+  const createTableSQL = `
     CREATE TABLE IF NOT EXISTS attendance (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      roll_no TEXT NOT NULL,
-      student_name TEXT NOT NULL,
-      month TEXT NOT NULL,
-      year INTEGER NOT NULL,
-      days_present INTEGER NOT NULL,
-      total_amount REAL NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(roll_no, month, year)
-    )
-  `)
+      id            SERIAL PRIMARY KEY,
+      roll_no       TEXT NOT NULL,
+      student_name  TEXT NOT NULL,
+      month         TEXT NOT NULL,
+      year          INTEGER NOT NULL,
+      mess          TEXT NOT NULL,
+      days_present  INTEGER NOT NULL,
+      total_amount  NUMERIC NOT NULL,
+      created_at    TIMESTAMPTZ DEFAULT now(),
+      UNIQUE (roll_no, month, year, mess)
+    );
+  `
+  try {
+    await pool.query(createTableSQL)
+    console.log("✅ attendance table is ready.")
+  } catch (err) {
+    console.error("❌ Failed to ensure attendance table exists:", err)
+  }
+})()
 
-  return db
-}
-
+// ---------------------------------------------------------
+// 3) The POST handler: parse Excel, find "Total Amount" col,
+//    discover headers, then upsert each student row.
+// ---------------------------------------------------------
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const file = formData.get("file") as File
+    const mess = formData.get("mess") as string | null;
+    if (!mess || (mess !== "college" && mess !== "Saroj")) {
+      return NextResponse.json({ error: "Mess must be 'college' or 'Saroj'" }, { status: 400 });
+    }
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 })
     }
@@ -39,16 +63,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Convert uploaded file into a Buffer
+    // ---- Convert uploaded file into Buffer ----
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
 
-    // Parse the workbook, read the first sheet
+    // ---- Parse the workbook, read the first sheet ----
     const workbook = XLSX.read(buffer, { type: "buffer" })
     const sheetName = workbook.SheetNames[0]
     const worksheet = workbook.Sheets[sheetName]
 
-    // Read the entire sheet into a 2D array
+    // ---- Convert the sheet into a 2D array of strings ----
     const fullData = XLSX.utils.sheet_to_json(worksheet, {
       header: 1,
       raw: false,
@@ -62,17 +86,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Open (or create) DB and prepare INSERT
-    const db = initDatabase()
-    const insertStmt = db.prepare(`
-      INSERT OR REPLACE INTO attendance
-      (roll_no, student_name, month, year, days_present, total_amount)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `)
-
-    // ------------------------------------------------------------------------
-    // STEP 1: EXTRACT “Month” and “Year”
-    // ------------------------------------------------------------------------
+    // ------------------------------------------
+    // STEP 1: EXTRACT "Month" and "Year" labels
+    //         (scan up to the first 100 rows)
+    // ------------------------------------------
     let month = "Unknown"
     let year = new Date().getFullYear()
     let foundMonth = false
@@ -86,23 +103,23 @@ export async function POST(request: NextRequest) {
         const raw = String(row[j] || "").trim()
         const lower = raw.toLowerCase()
 
-        // If the cell is exactly "month" or "month:", grab next non-empty cell
+        // If the cell text is exactly "month" or "month:"
         if (!foundMonth && (lower === "month" || lower === "month:")) {
           for (let k = j + 1; k < row.length; k++) {
-            const cand = String(row[k] || "").trim()
-            if (cand !== "") {
-              month = cand
+            const candidate = String(row[k] || "").trim()
+            if (candidate !== "") {
+              month = candidate
               foundMonth = true
               break
             }
           }
         }
 
-        // If the cell is exactly "year" or "year:", scan to the right until we parse an integer
+        // If the cell text is exactly "year" or "year:"
         if (!foundYear && (lower === "year" || lower === "year:")) {
           for (let k = j + 1; k < row.length; k++) {
-            const cand = String(row[k] || "").trim()
-            const parsed = Number.parseInt(cand, 10)
+            const candidate = String(row[k] || "").trim()
+            const parsed = Number.parseInt(candidate, 10)
             if (!isNaN(parsed)) {
               year = parsed
               foundYear = true
@@ -116,23 +133,27 @@ export async function POST(request: NextRequest) {
       if (foundMonth && foundYear) break
     }
 
-    // ------------------------------------------------------------------------
-    // STEP 2: LOCATE THE TWO-ROW “STUDENT DATA” HEADER
-    // ------------------------------------------------------------------------
+    // ------------------------------------------
+    // STEP 2: LOCATE the "Student Header" row
+    //
+    //   • That row must contain either:
+    //        – "Student Name" & "Roll No."   (old format) 
+    //     OR – "Name" & "Enrollment No"      (new format)
+    // ------------------------------------------
     let headerRowIndex = -1
     for (let i = 0; i < fullData.length; i++) {
       const row = fullData[i]
       if (!row) continue
 
-      // Check if row contains either set of labels:
-      //  • “Student Name” AND “Roll No.”
-      //  • or “Name” AND “Enrollment No”
+      // Does this row contain "student name" + "roll no." ?
       const hasOldName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "student name",
       )
       const hasOldRoll = row.some(
         (c) => String(c || "").trim().toLowerCase() === "roll no.",
       )
+
+      // OR does it contain "name" + "enrollment no" ?
       const hasNewName = row.some(
         (c) => String(c || "").trim().toLowerCase() === "name",
       )
@@ -147,55 +168,65 @@ export async function POST(request: NextRequest) {
     }
 
     if (headerRowIndex === -1) {
-      db.close()
       return NextResponse.json(
         {
           error:
-            "Could not find header row. Expected either 'Student Name' & 'Roll No.' or 'Name' & 'Enrollment No'.",
+            "Could not find a header row. Expected either 'Student Name' & 'Roll No.' or 'Name' & 'Enrollment No'.",
         },
         { status: 400 },
       )
     }
 
-    // Extract the first header row (N)
     const headerRow = fullData[headerRowIndex]
-    // Extract the second header row (N+1), where “A”/“P” totals live
     const nextHeaderRow = fullData[headerRowIndex + 1] || []
 
-    // ------------------------------------------------------------------------
-    // STEP 3: DETERMINE COLUMN INDICES (works for both old & new formats)
-    // ------------------------------------------------------------------------
-    // 1) student_name column:
-    //    old → "Student Name"
-    //    new → "Name"
+    // ------------------------------------------
+    // STEP 3: DETERMINE COLUMN INDICES
+    //
+    //   (a) student_name column → "Student Name" OR "Name"
+    //   (b) roll_no column      → "Roll No." OR "Enrollment No"
+    //   (c) days_present (P)    → look for "P" in nextHeaderRow
+    //   (d) days_absent  (A)    → look for "A" in nextHeaderRow
+    //   (e) total_amount        → SCAN from the student header row upwards for "Total Amount"
+    // ------------------------------------------
+
+    // (a) student_name
     const nameColIndex = headerRow.findIndex((cell) => {
       const txt = String(cell || "").trim().toLowerCase()
       return txt === "student name" || txt === "name"
     })
 
-    // 2) roll_no column:
-    //    old → "Roll No."
-    //    new → "Enrollment No"
+    // (b) roll_no
     const rollNoColIndex = headerRow.findIndex((cell) => {
       const txt = String(cell || "").trim().toLowerCase()
       return txt === "roll no." || txt === "enrollment no"
     })
 
-    // 3) total_amount column (could be labeled "Total amount" or "Total Amounts")
-    const totalAmountColIndex = headerRow.findIndex((cell) => {
-      const txt = String(cell || "").trim().toLowerCase()
-      return txt.includes("total amount")
-    })
-
-    // 4) present (“P”) & absent (“A”) columns live in nextHeaderRow
+    // (c) present ("P") in the nextHeaderRow
     const presentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "p"
     })
+
+    // (d) absent ("A") in the nextHeaderRow
     const absentColIndex = nextHeaderRow.findIndex((cell) => {
       return String(cell || "").trim().toLowerCase() === "a"
     })
 
-    // If any required index is missing, error out
+    // (e) total_amount: scan from the student header row upwards for "Total Amount"
+    let totalAmountColIndex = -1;
+    for (let i = headerRowIndex; i >= 0; i--) {
+      const row = fullData[i];
+      if (!row) continue;
+      for (let j = 0; j < row.length; j++) {
+        if (String(row[j] || "").trim().toLowerCase() === "total amount") {
+          totalAmountColIndex = j;
+          break;
+        }
+      }
+      if (totalAmountColIndex !== -1) break;
+    }
+
+    // If any required column was not found, return an error
     if (
       nameColIndex === -1 ||
       rollNoColIndex === -1 ||
@@ -203,26 +234,42 @@ export async function POST(request: NextRequest) {
       absentColIndex === -1 ||
       totalAmountColIndex === -1
     ) {
-      db.close()
       return NextResponse.json(
         {
           error:
-            "Missing required columns. Need: student name (or name), roll/enrollment no., 'P', 'A', and total-amount column.",
+            "Missing required columns. Need: student name (or name), roll/enrollment no., 'P', 'A', and 'Total Amount'.",
         },
         { status: 400 },
       )
     }
 
-    // ------------------------------------------------------------------------
+    // ------------------------------------------
     // STEP 4: LOOP OVER STUDENT ROWS (start two rows below headerRowIndex)
-    //   → UPPERCASE rollNo & studentName before storing
-    // ------------------------------------------------------------------------
+    //
+    //   • Uppercase rollNo & studentName before storing
+    //   • daysPresent = cell under "P"
+    //   • totalAmount = cell under "Total Amount" (found above)
+    // ------------------------------------------
     let recordsProcessed = 0
+
+    // Prepare a single UPSERT statement for Postgres
+    const upsertSQL = `
+      INSERT INTO attendance
+        (roll_no, student_name, month, year, mess, days_present, total_amount)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (roll_no, month, year, mess)
+      DO UPDATE SET
+        student_name  = EXCLUDED.student_name,
+        days_present  = EXCLUDED.days_present,
+        total_amount  = EXCLUDED.total_amount
+      RETURNING id;
+    `
+
     for (let i = headerRowIndex + 2; i < fullData.length; i++) {
       const row = fullData[i]
       if (!row) continue
 
-      // Ensure we don’t go out of bounds
+      // Prevent out‐of‐bounds access
       const maxIdx = Math.max(
         nameColIndex,
         rollNoColIndex,
@@ -231,7 +278,6 @@ export async function POST(request: NextRequest) {
       )
       if (row.length <= maxIdx) continue
 
-      // Extract raw strings
       let studentName = String(row[nameColIndex] || "").trim()
       let rollNo = String(row[rollNoColIndex] || "").trim()
       if (!studentName || !rollNo) {
@@ -239,37 +285,34 @@ export async function POST(request: NextRequest) {
         continue
       }
 
-      // --- NEW: force uppercase here ---
+      // FORCE uppercase so "lit2024042" → "LIT2024042"
       studentName = studentName.toUpperCase()
       rollNo = rollNo.toUpperCase()
 
-      // Read “P” total directly
-      const daysPresent = Number.parseInt(
-        String(row[presentColIndex] || "0"),
-        10,
-      ) || 0
+      // Read "P" directly
+      const daysPresent =
+        Number.parseInt(String(row[presentColIndex] || "0"), 10) || 0
 
-      // Read “Total amount” directly
-      const totalAmount = Number.parseFloat(
-        String(row[totalAmountColIndex] || "0"),
-      ) || 0
+      // Read "Total Amount" from the column we discovered above
+      const totalAmount =
+        Number.parseFloat(String(row[totalAmountColIndex] || "0")) || 0
 
       try {
-        insertStmt.run(
+        await pool.query(upsertSQL, [
           rollNo,
           studentName,
           month,
           year,
+          mess,
           daysPresent,
           totalAmount,
-        )
+        ])
         recordsProcessed++
       } catch (err) {
-        console.error(`Error inserting (${rollNo}):`, err)
+        console.error(`Failed to upsert attendance for ${rollNo}:`, err)
       }
     }
 
-    db.close()
     return NextResponse.json({
       message: "File processed successfully",
       recordsProcessed,
