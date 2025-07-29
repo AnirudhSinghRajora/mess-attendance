@@ -193,7 +193,7 @@ export async function POST(request: NextRequest) {
 
     var nameColIndex;
     var rollNoColIndex;
-    if(year == 2023 || year == 2022){
+    if((year == 2023 || year == 2022) && mess == "college"){
       rollNoColIndex = headerRow.findIndex((cell) => {
         const txt = String(cell || "").trim().toLowerCase()
         return txt === "student name" || txt === "name"
