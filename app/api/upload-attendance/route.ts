@@ -92,6 +92,7 @@ export async function POST(request: NextRequest) {
     // ------------------------------------------
     let month = "Unknown"
     let year = new Date().getFullYear()
+    console.log(year);
     let foundMonth = false
     let foundYear = false
 
@@ -193,25 +194,24 @@ export async function POST(request: NextRequest) {
     var nameColIndex;
     var rollNoColIndex;
     if(year == 2023 || year == 2022){
-      nameColIndex = headerRow.findIndex((cell) => {
+      rollNoColIndex = headerRow.findIndex((cell) => {
         const txt = String(cell || "").trim().toLowerCase()
         return txt === "student name" || txt === "name"
       })
-  
+      
       // (b) roll_no
-      rollNoColIndex = headerRow.findIndex((cell) => {
+      nameColIndex = headerRow.findIndex((cell) => {
         const txt = String(cell || "").trim().toLowerCase()
         return txt === "roll no." || txt === "enrollment no"
       })
-      
     }else{
-      rollNoColIndex = headerRow.findIndex((cell) => {
+      nameColIndex = headerRow.findIndex((cell) => {
         const txt = String(cell || "").trim().toLowerCase()
         return txt === "student name" || txt === "name"
       })
   
       // (b) roll_no
-      nameColIndex = headerRow.findIndex((cell) => {
+      rollNoColIndex = headerRow.findIndex((cell) => {
         const txt = String(cell || "").trim().toLowerCase()
         return txt === "roll no." || txt === "enrollment no"
       })
